@@ -311,6 +311,10 @@ class RadiographySimulator(QMainWindow):
         analyze_btn = QPushButton("Analyze Pathology Detection")
         analyze_btn.clicked.connect(self.analyze_pathology)
         layout.addWidget(analyze_btn)
+
+        self.pathology_outline_checkbox = QCheckBox("Show lesion outline")
+        self.pathology_outline_checkbox.setChecked(False)
+        layout.addWidget(self.pathology_outline_checkbox)
         
         layout.addStretch()
         widget.setLayout(layout)
@@ -336,6 +340,12 @@ class RadiographySimulator(QMainWindow):
         self.physics.create_digital_phantom(256, 256)
         self.phantom = self.physics.phantom
         print("[UI] Phantom created")
+
+    @staticmethod
+    def _to_bone_white_display(radiograph: np.ndarray) -> np.ndarray:
+        """Map transmission image to display where bone is white and air is dark."""
+        radiograph_norm = (radiograph - radiograph.min()) / (radiograph.max() - radiograph.min() + 1e-6)
+        return 1.0 - radiograph_norm
     
     def simulate_basic(self):
         """Simulate basic acquisition"""
@@ -484,12 +494,12 @@ class RadiographySimulator(QMainWindow):
             self.figure.clear()
             
             ax1 = self.figure.add_subplot(131)
-            im1 = ax1.imshow(img_low, cmap='gray')
+            im1 = ax1.imshow(self._to_bone_white_display(img_low), cmap='gray', vmin=0, vmax=1)
             ax1.set_title(f'Low Energy (80 kVp)\nI₀={dose_low}')
             ax1.axis('off')
             
             ax2 = self.figure.add_subplot(132)
-            im2 = ax2.imshow(img_high, cmap='gray')
+            im2 = ax2.imshow(self._to_bone_white_display(img_high), cmap='gray', vmin=0, vmax=1)
             ax2.set_title(f'High Energy (120 kVp)\nI₀={dose_high}')
             ax2.axis('off')
             
@@ -517,32 +527,88 @@ class RadiographySimulator(QMainWindow):
             severity = self.severity_slider.value() / 100.0
             threshold_dose = self.threshold_spinbox.value()
             
-            # Create phantom with pathology
-            phantom_with_path = self.physics.add_synthetic_pathology(
-                self.phantom, pathology_type, severity
+            # Create phantom with pathology and projected lesion mask
+            phantom_with_path, lesion_mask_2d = self.physics.add_synthetic_pathology(
+                self.phantom, pathology_type, severity, return_mask_2d=True
             )
             
             # Simulate different doses
             doses = np.array([threshold_dose // 2, threshold_dose, threshold_dose * 2])
-            radiographs = []
+            pathology_radiographs = []
+            od_radiographs = []
+            rose_values = []
+            rose_stds = []
+            repeats = 10
             
             for dose in doses:
-                radiograph = self.physics.simulate_acquisition(phantom_with_path, dose)
-                radiograph = self.physics.apply_poisson_noise(radiograph)
-                radiographs.append(radiograph)
+                baseline_ideal = self.physics.simulate_acquisition(self.phantom, dose)
+                pathology_ideal = self.physics.simulate_acquisition(phantom_with_path, dose)
+                dprime_rep = []
+                selected_noisy = None
+                selected_od = None
+
+                for rep in range(repeats):
+                    pathology_noisy = self.physics.apply_poisson_noise(pathology_ideal)
+                    transmission = np.clip(pathology_noisy / (dose + 1e-6), 1e-6, 1.0)
+                    pathology_od = -np.log(transmission)
+
+                    rose = self.physics.compute_rose_detectability(
+                        pathology_noisy,
+                        lesion_mask_2d,
+                        I0=float(dose),
+                        baseline_ideal=baseline_ideal,
+                        pathology_ideal=pathology_ideal,
+                    )
+                    dprime_rep.append(rose['rose_dprime'])
+
+                    if rep == 0:
+                        selected_noisy = pathology_noisy
+                        selected_od = pathology_od
+
+                pathology_radiographs.append(selected_noisy)
+                od_radiographs.append(selected_od)
+                rose_values.append(float(np.mean(dprime_rep)))
+                rose_stds.append(float(np.std(dprime_rep)))
             
-            # Display comparison
+            # Display comparison: top row = OD images (dose-normalized), bottom row = ideal contrast map
             self.figure.clear()
-            for i, (rad, dose) in enumerate(zip(radiographs, doses)):
-                ax = self.figure.add_subplot(1, 3, i+1)
-                ax.imshow(rad, cmap='gray')
-                ax.set_title(f'Dose: {dose}')
+
+            if od_radiographs:
+                od_min = float(min(np.percentile(img, 1) for img in od_radiographs))
+                od_max = float(max(np.percentile(img, 99) for img in od_radiographs))
+            else:
+                od_min, od_max = 0.0, 1.0
+
+            for i, (rad_od, dose, dprime, dstd) in enumerate(zip(od_radiographs, doses, rose_values, rose_stds)):
+                ax = self.figure.add_subplot(2, 3, i + 1)
+                od_norm = (rad_od - od_min) / (od_max - od_min + 1e-6)
+                ax.imshow(od_norm, cmap='gray', vmin=0, vmax=1)
+                if self.pathology_outline_checkbox.isChecked() and np.count_nonzero(lesion_mask_2d) > 0:
+                    ax.contour(lesion_mask_2d.astype(float), levels=[0.5], colors='red', linewidths=0.6)
+                ax.set_title(f'Dose={dose}\nd\'={dprime:.2f}±{dstd:.2f}')
                 ax.axis('off')
+
+                # Contrast map relative to baseline at same dose
+                baseline_ideal = self.physics.simulate_acquisition(self.phantom, dose)
+                pathology_ideal = self.physics.simulate_acquisition(phantom_with_path, dose)
+                diff = pathology_ideal - baseline_ideal
+
+                ax_diff = self.figure.add_subplot(2, 3, i + 4)
+                vmax = np.max(np.abs(diff)) + 1e-6
+                ax_diff.imshow(diff, cmap='seismic', vmin=-vmax, vmax=vmax)
+                if self.pathology_outline_checkbox.isChecked() and np.count_nonzero(lesion_mask_2d) > 0:
+                    ax_diff.contour(lesion_mask_2d.astype(float), levels=[0.5], colors='black', linewidths=0.5)
+                ax_diff.set_title('Ideal contrast map')
+                ax_diff.axis('off')
             
             self.figure.tight_layout()
             self.canvas.draw()
-            
-            self.status_label.setText(f"✓ Pathology analysis complete ({pathology_type}, severity={severity:.2f})")
+
+            max_dprime = max(rose_values) if rose_values else 0.0
+            rose_state = "detectable" if max_dprime >= 5.0 else "sub-threshold"
+            self.status_label.setText(
+                f"✓ Pathology analysis complete ({pathology_type}, severity={severity:.2f}) | max d'={max_dprime:.2f} ({rose_state}), averaged over {repeats} realizations"
+            )
             
         except Exception as e:
             self.status_label.setText(f"✗ Error: {str(e)}")
@@ -552,14 +618,12 @@ class RadiographySimulator(QMainWindow):
         """Display a single radiograph"""
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
-        # Normalize for display
-        radiograph_norm = (radiograph - radiograph.min()) / (radiograph.max() - radiograph.min() + 1e-6)
-        
-        im = ax.imshow(radiograph_norm, cmap='gray')
+
+        display = self._to_bone_white_display(radiograph)
+        im = ax.imshow(display, cmap='gray', vmin=0, vmax=1)
         ax.set_title(title)
         ax.axis('off')
-        self.figure.colorbar(im, ax=ax, label='Intensity (normalized)')
+        self.figure.colorbar(im, ax=ax, label='Radiographic opacity (bone-white)')
         self.figure.tight_layout()
         self.canvas.draw()
 
@@ -584,11 +648,11 @@ class RadiographySimulator(QMainWindow):
         cbar1 = self.figure.colorbar(im1, ax=ax1, ticks=[0, 1, 2, 3], fraction=0.046, pad=0.04)
         cbar1.ax.set_yticklabels(['Air', 'Soft', 'Bone', 'Dense'])
 
-        radiograph_norm = (radiograph - radiograph.min()) / (radiograph.max() - radiograph.min() + 1e-6)
-        im2 = ax2.imshow(radiograph_norm, cmap='gray')
+        display = self._to_bone_white_display(radiograph)
+        im2 = ax2.imshow(display, cmap='gray', vmin=0, vmax=1)
         ax2.set_title(title)
         ax2.axis('off')
-        self.figure.colorbar(im2, ax=ax2, label='Intensity (normalized)', fraction=0.046, pad=0.04)
+        self.figure.colorbar(im2, ax=ax2, label='Radiographic opacity (bone-white)', fraction=0.046, pad=0.04)
 
         self.figure.tight_layout()
         self.canvas.draw()

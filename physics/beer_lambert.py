@@ -21,6 +21,7 @@ class BeerLambertSimulator:
         'soft_tissue': {'low': 0.38, 'high': 0.19},
         'bone': {'low': 1.55, 'high': 0.60},
         'dense': {'low': 2.50, 'high': 1.20},  # pathology
+        'fracture': {'low': 1.15, 'high': 0.45},  # subtle cortical crack material
     }
     
     def __init__(self, seed: Optional[int] = None):
@@ -31,6 +32,16 @@ class BeerLambertSimulator:
         self.rng = np.random.default_rng(seed)
         self.voxel_size_cm = 0.1  # 1 mm voxel thickness equivalent
         self.last_dual_weights = (1.0, 1.0)
+        self.last_pathology_mask_2d = None
+
+    @staticmethod
+    def _ensure_3d(phantom: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """Return a 3D view of the phantom and whether original input was 2D."""
+        if phantom.ndim == 2:
+            return phantom[np.newaxis, ...], True
+        if phantom.ndim == 3:
+            return phantom, False
+        raise ValueError("Phantom must be 2D or 3D")
         
     def create_digital_phantom(self, width: int = 256, height: int = 256, depth: int = 64) -> np.ndarray:
         """
@@ -86,8 +97,13 @@ class BeerLambertSimulator:
         print(f"[Physics] Phantom created: {np.unique(phantom, return_counts=True)}")
         return phantom
     
-    def add_synthetic_pathology(self, phantom: np.ndarray, pathology_type: str = 'nodule', 
-                               severity: float = 1.0) -> np.ndarray:
+    def add_synthetic_pathology(
+        self,
+        phantom: np.ndarray,
+        pathology_type: str = 'nodule',
+        severity: float = 1.0,
+        return_mask_2d: bool = False,
+    ):
         """
         Add synthetic pathology to phantom for detection studies.
         
@@ -97,17 +113,16 @@ class BeerLambertSimulator:
             severity: Pathology intensity (0-1 scale)
             
         Returns:
-            Modified phantom with pathology
+            Modified phantom with pathology, and optionally 2D lesion mask
         """
         phantom_with_pathology = phantom.copy()
         severity = float(np.clip(severity, 0.0, 1.0))
 
         # Ensure 3D representation for modification
-        is_2d = phantom_with_pathology.ndim == 2
-        if is_2d:
-            phantom_with_pathology = phantom_with_pathology[np.newaxis, ...]
+        phantom_with_pathology, is_2d = self._ensure_3d(phantom_with_pathology)
 
         depth, height, width = phantom_with_pathology.shape
+        lesion_mask_3d = np.zeros_like(phantom_with_pathology, dtype=bool)
 
         def sample_from_mask(mask: np.ndarray, fallback_xyz: Tuple[int, int, int]) -> Tuple[int, int, int]:
             coords = np.argwhere(mask)
@@ -126,24 +141,38 @@ class BeerLambertSimulator:
             radius = max(2, int(3 + 8 * severity))
             zz, yy, xx = np.ogrid[:depth, :height, :width]
             mask = (xx - xc) ** 2 + (yy - yc) ** 2 + (zz - zc) ** 2 <= radius ** 2
-            phantom_with_pathology[mask & (phantom_with_pathology == 1)] = 3
+            lesion_mask_3d = mask & (phantom_with_pathology == 1)
+            phantom_with_pathology[lesion_mask_3d] = 3
             
         elif pathology_type == 'fracture':
-            # Add a micro-fracture in bone as a thin low-density streak
+            # Add a cortical-like crack that spans multiple depth slices to survive projection.
             zc, yc, xc = sample_from_mask(
                 phantom_with_pathology == 2,
                 (depth // 2, height // 2, width // 2)
             )
-            length = max(4, int(8 + 20 * severity))
-            thickness = max(1, int(1 + 2 * severity))
-            y0 = max(0, yc - length // 2)
-            y1 = min(height, yc + length // 2)
-            z0 = max(0, zc - thickness)
-            z1 = min(depth, zc + thickness + 1)
-            x0 = max(0, xc - thickness)
-            x1 = min(width, xc + thickness + 1)
-            bone_region = phantom_with_pathology[z0:z1, y0:y1, x0:x1] == 2
-            phantom_with_pathology[z0:z1, y0:y1, x0:x1][bone_region] = 1
+            length = max(8, int(14 + 36 * severity))
+            width_px = max(1, int(1 + 2 * severity))
+            crack_depth = max(6, int(depth * (0.18 + 0.35 * severity)))
+            orientation = 'horizontal' if self.rng.random() < 0.5 else 'vertical'
+
+            z0 = max(0, zc - crack_depth // 2)
+            z1 = min(depth, zc + crack_depth // 2 + 1)
+
+            if orientation == 'horizontal':
+                y0 = max(0, yc - width_px)
+                y1 = min(height, yc + width_px + 1)
+                x0 = max(0, xc - length // 2)
+                x1 = min(width, xc + length // 2 + 1)
+            else:
+                y0 = max(0, yc - length // 2)
+                y1 = min(height, yc + length // 2 + 1)
+                x0 = max(0, xc - width_px)
+                x1 = min(width, xc + width_px + 1)
+
+            candidate = np.zeros_like(phantom_with_pathology, dtype=bool)
+            candidate[z0:z1, y0:y1, x0:x1] = True
+            lesion_mask_3d = candidate & (phantom_with_pathology == 2)
+            phantom_with_pathology[lesion_mask_3d] = 4
             
         elif pathology_type == 'density':
             # Add localized increased density patch in soft tissue
@@ -154,12 +183,18 @@ class BeerLambertSimulator:
             radius = max(3, int(4 + 10 * severity))
             zz, yy, xx = np.ogrid[:depth, :height, :width]
             mask = (xx - xc) ** 2 + (yy - yc) ** 2 + (zz - zc) ** 2 <= radius ** 2
-            phantom_with_pathology[mask & (phantom_with_pathology == 1)] = 2
+            lesion_mask_3d = mask & (phantom_with_pathology == 1)
+            phantom_with_pathology[lesion_mask_3d] = 2
+
+        lesion_mask_2d = np.any(lesion_mask_3d, axis=0)
+        self.last_pathology_mask_2d = lesion_mask_2d
 
         if is_2d:
             phantom_with_pathology = phantom_with_pathology[0]
         
         print(f"[Physics] Added {pathology_type} pathology (severity: {severity:.2f})")
+        if return_mask_2d:
+            return phantom_with_pathology, lesion_mask_2d
         return phantom_with_pathology
     
     def simulate_acquisition(self, phantom: np.ndarray, I0: int = None, 
@@ -184,12 +219,7 @@ class BeerLambertSimulator:
         print(f"[Physics] Simulating acquisition: I₀={self.I0}, Energy={self.energy} kVp")
         
         # Ensure 3D representation: (depth, height, width)
-        if phantom.ndim == 2:
-            phantom_3d = phantom[np.newaxis, ...]
-        elif phantom.ndim == 3:
-            phantom_3d = phantom
-        else:
-            raise ValueError("Phantom must be 2D or 3D")
+        phantom_3d, _ = self._ensure_3d(phantom)
 
         # Build voxel attenuation map
         mu_volume = np.zeros_like(phantom_3d, dtype=np.float64)
@@ -200,7 +230,7 @@ class BeerLambertSimulator:
             attenuation[material] = coeff[self.energy]
         
         # Material index to key mapping
-        material_map = {0: 'air', 1: 'soft_tissue', 2: 'bone', 3: 'dense'}
+        material_map = {0: 'air', 1: 'soft_tissue', 2: 'bone', 3: 'dense', 4: 'fracture'}
         
         # Apply Beer-Lambert law
         # μx is the integrated attenuation coefficient times path length
@@ -235,6 +265,80 @@ class BeerLambertSimulator:
         noisy = self.rng.poisson(photon_map).astype(np.float64)
         
         return noisy
+
+    def compute_rose_detectability(
+        self,
+        pathology_noisy: np.ndarray,
+        lesion_mask_2d: np.ndarray,
+        I0: float,
+        baseline_ideal: Optional[np.ndarray] = None,
+        pathology_ideal: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
+        """
+        Compute a practical Rose-style detectability metric in optical-density domain.
+
+        This implementation intentionally models a less-than-ideal human observer:
+        - Works in OD domain (log-transformed transmission).
+        - Includes local anatomical clutter and small internal observer noise.
+        - Uses suboptimal area integration (A^0.25) rather than ideal sqrt(A).
+        """
+        eps = 1e-6
+        lesion_mask = lesion_mask_2d.astype(bool)
+        area = int(np.count_nonzero(lesion_mask))
+        if area == 0:
+            od = -np.log(np.clip(pathology_noisy / (I0 + eps), eps, 1.0))
+            return {
+                'delta_signal': 0.0,
+                'noise_sigma': float(np.std(od)),
+                'lesion_area': 0.0,
+                'rose_dprime': 0.0,
+            }
+
+        # Ring neighborhood around lesion for local background/noise estimate
+        ring_outer = ndimage.binary_dilation(lesion_mask, iterations=5)
+        ring_inner = ndimage.binary_dilation(lesion_mask, iterations=2)
+        ring_mask = ring_outer & (~ring_inner)
+        if np.count_nonzero(ring_mask) < 20:
+            ring_mask = ~lesion_mask
+
+        # Convert to optical density to suppress pure intensity scaling with dose.
+        transmission = np.clip(pathology_noisy / (I0 + eps), eps, 1.0)
+        od = -np.log(transmission)
+
+        # Signal term: prefer ideal contrast when available to avoid single-noise-sample bias.
+        if baseline_ideal is not None and pathology_ideal is not None:
+            base_t = np.clip(baseline_ideal / (I0 + eps), eps, 1.0)
+            path_t = np.clip(pathology_ideal / (I0 + eps), eps, 1.0)
+            base_od = -np.log(base_t)
+            path_od = -np.log(path_t)
+            ideal_diff = path_od - base_od
+            delta_signal = float(np.mean(np.abs(ideal_diff[lesion_mask])))
+        else:
+            lesion_mean = float(np.mean(od[lesion_mask]))
+            ring_mean = float(np.mean(od[ring_mask]))
+            delta_signal = float(abs(lesion_mean - ring_mean))
+
+        # Local quantum noise in OD domain.
+        quantum_sigma = float(np.std(od[ring_mask]))
+
+        # Anatomical clutter estimate from low-frequency OD variation.
+        od_smooth = ndimage.gaussian_filter(od, sigma=2.0)
+        clutter_sigma = float(np.std(od_smooth[ring_mask]))
+
+        # Internal observer noise and non-ideal integration efficiency.
+        internal_sigma = 0.01
+        total_sigma = float(np.sqrt(quantum_sigma**2 + (0.6 * clutter_sigma)**2 + internal_sigma**2))
+        area_gain = float(max(1.0, area) ** 0.25)
+        observer_efficiency = 0.85
+
+        rose_dprime = float(observer_efficiency * (delta_signal / (total_sigma + eps)) * area_gain)
+
+        return {
+            'delta_signal': delta_signal,
+            'noise_sigma': total_sigma,
+            'lesion_area': float(area),
+            'rose_dprime': rose_dprime,
+        }
 
     def get_projected_material_masks(self, phantom: np.ndarray) -> Dict[str, np.ndarray]:
         """

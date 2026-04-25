@@ -214,6 +214,61 @@ def test_synthetic_pathology():
     return True
 
 
+def test_fracture_projection_visibility():
+    """Test that fracture alters projected radiograph intensity."""
+    print("\n[TEST] Fracture Projection Visibility")
+    print("-" * 50)
+
+    simulator = BeerLambertSimulator(seed=42)
+    phantom = simulator.create_digital_phantom()
+    phantom_with_fracture, lesion_mask = simulator.add_synthetic_pathology(
+        phantom, pathology_type='fracture', severity=0.8, return_mask_2d=True
+    )
+
+    base = simulator.simulate_acquisition(phantom, I0=10000, energy='high')
+    fracture = simulator.simulate_acquisition(phantom_with_fracture, I0=10000, energy='high')
+
+    lesion_pixels = int(np.count_nonzero(lesion_mask))
+    assert lesion_pixels > 0, "Lesion mask should be non-empty"
+
+    mean_abs_diff = float(np.mean(np.abs(fracture[lesion_mask] - base[lesion_mask])))
+    assert mean_abs_diff > 0.1, "Fracture should create measurable projection contrast"
+
+    print(f"✓ Lesion pixels: {lesion_pixels}")
+    print(f"✓ Mean lesion contrast (ideal): {mean_abs_diff:.4f}")
+    return True
+
+
+def test_rose_detectability_increases_with_dose():
+    """Test Rose d' trend with increasing dose."""
+    print("\n[TEST] Rose Detectability vs Dose")
+    print("-" * 50)
+
+    simulator = BeerLambertSimulator(seed=42)
+    phantom = simulator.create_digital_phantom()
+    phantom_with_nodule, lesion_mask = simulator.add_synthetic_pathology(
+        phantom, pathology_type='nodule', severity=0.7, return_mask_2d=True
+    )
+
+    doses = [1000, 5000, 10000]
+    dprimes = []
+
+    for dose in doses:
+        pathology_ideal = simulator.simulate_acquisition(phantom_with_nodule, I0=dose, energy='high')
+        pathology_noisy = simulator.apply_poisson_noise(pathology_ideal)
+
+        rose = simulator.compute_rose_detectability(
+            pathology_noisy,
+            lesion_mask,
+            I0=float(dose),
+        )
+        dprimes.append(rose['rose_dprime'])
+        print(f"✓ Dose {dose:5d}: d' = {rose['rose_dprime']:.3f}")
+
+    assert dprimes[-1] > dprimes[0], "Rose d' should increase with dose"
+    return True
+
+
 def run_all_tests():
     """Run all tests"""
     print("=" * 60)
@@ -229,6 +284,8 @@ def run_all_tests():
         test_geometric_effects,
         test_dual_energy_subtraction,
         test_synthetic_pathology,
+        test_fracture_projection_visibility,
+        test_rose_detectability_increases_with_dose,
     ]
     
     passed = 0
