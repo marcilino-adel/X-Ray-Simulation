@@ -384,38 +384,82 @@ class BeerLambertSimulator:
 
         return image
     
-    def apply_geometric_effects(self, radiograph: np.ndarray, 
-                               magnification: float = 1.0,
-                               penumbra: float = 0.0) -> np.ndarray:
+
+    def apply_geometric_effects(self, radiograph: np.ndarray,
+                                SID: float = 100.0,
+                                ODD: float = 0.0,
+                                focal_spot_size: float = 0.06,
+                                apply_magnification: bool = True,
+                                apply_penumbra: bool = True) -> np.ndarray:
         """
-        Apply geometric effects:
-        - Magnification: Object-to-Detector Distance (ODD)
-        - Penumbra (edge unsharpness): focal spot size effect
+        Apply geometric effects based on physical X-ray geometry.
         
+        Physical setup:
+            Source --> [Object] --> [Detector]
+            |----SOD----|----ODD----|
+            |----------SID---------|
+        
+        SID is constant (set by user).
+        ODD is variable (set by user).
+        SOD is automatically calculated as SID - ODD.
+    
         Args:
-            radiograph: Input radiograph
-            magnification: Linear magnification factor (1.0 = no magnification)
-            penumbra: Penumbra blur radius (pixels)
+            radiograph          : Input radiograph (2D numpy array)
+            SID                 : Source-to-Image Distance in cm (constant, default 100 cm)
+            ODD                 : Object-to-Detector Distance in cm (variable, default 0 = no effect)
+            focal_spot_size     : Focal spot size in cm (default 0.06 cm = 0.6 mm)
+            apply_magnification : Toggle magnification effect ON/OFF
+            apply_penumbra      : Toggle penumbra effect ON/OFF
             
         Returns:
-            Radiograph with geometric effects applied
+            Radiograph with selected geometric effects applied
         """
         result = radiograph.copy()
-        
-        # Apply magnification with centered crop/pad
-        if magnification != 1.0:
-            print(f"[Physics] Applying magnification: {magnification:.2f}x")
+    
+        # ── Step 1: Calculate SOD from SID and ODD ────────────
+        # SID is constant, ODD is variable, SOD is calculated
+        SOD = SID - ODD
+    
+        # Safety check
+        if SOD <= 0:
+            print(f"[Physics] ERROR: SOD must be > 0 (SID={SID}, ODD={ODD})")
+            return result
+    
+        # ── Step 2: Derive Magnification ──────────────────────
+        # M = SID / SOD
+        magnification = SID / SOD
+    
+        # ── Step 3: Derive Penumbra from ODD and focal spot ───
+        # Penumbra (cm) = focal_spot_size × (ODD / SOD)
+        penumbra_cm     = focal_spot_size * (ODD / SOD)
+        pixels_per_cm   = 1.0 / self.voxel_size_cm
+        penumbra_pixels = penumbra_cm * pixels_per_cm
+    
+        print(f"[Physics] Geometric Effects:")
+        print(f"  SID={SID} cm  (constant)")
+        print(f"  ODD={ODD} cm  (variable)")
+        print(f"  SOD = SID - ODD = {SID} - {ODD} = {SOD:.1f} cm  (calculated)")
+        print(f"  Magnification = SID/SOD = {magnification:.3f}x  → {'ON' if apply_magnification else 'OFF'}")
+        print(f"  Penumbra = {penumbra_cm:.4f} cm ({penumbra_pixels:.2f} px)  → {'ON' if apply_penumbra else 'OFF'}")
+    
+        # ── Step 4: Apply Magnification (if ON) ───────────────
+        if apply_magnification and magnification > 1.0:
+            print(f"[Physics] Applying magnification: {magnification:.3f}x")
             from scipy.ndimage import zoom
-            result = zoom(result, magnification, order=1)
+            result = zoom(result, magnification, order=3)  # order=3 = bicubic (more realistic)
             h, w = radiograph.shape
             result = self._center_crop_or_pad(result, (h, w))
-        
-        # Apply penumbra (focal spot blurring)
-        if penumbra > 0:
-            print(f"[Physics] Applying penumbra: {penumbra:.2f}px")
-            sigma = penumbra / 2.355  # Convert FWHM to sigma
+        else:
+            print(f"[Physics] Magnification skipped (OFF or ODD=0)")
+    
+        # ── Step 5: Apply Penumbra (if ON) ────────────────────
+        if apply_penumbra and penumbra_pixels > 0:
+            print(f"[Physics] Applying penumbra blur: {penumbra_pixels:.2f} px")
+            sigma = penumbra_pixels / 2.355  # Convert FWHM to sigma
             result = ndimage.gaussian_filter(result, sigma=sigma)
-        
+        else:
+            print(f"[Physics] Penumbra skipped (OFF or ODD=0)")
+    
         return result
     
     def dual_energy_subtraction(self, phantom: np.ndarray, I0_low: int, I0_high: int,
