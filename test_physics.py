@@ -144,24 +144,62 @@ def test_geometric_effects():
     """Test geometric magnification and penumbra"""
     print("\n[TEST] Geometric Effects")
     print("-" * 50)
-    
+
     simulator = BeerLambertSimulator(seed=42)
     simulator.create_digital_phantom()
     radiograph = simulator.simulate_acquisition(simulator.phantom, I0=10000, energy='high')
-    
-    # Test magnification
-    radiograph_mag = simulator.apply_geometric_effects(radiograph, magnification=1.5, penumbra=0)
-    
-    print(f"✓ Original shape: {radiograph.shape}")
+
+    # ── Test 1: Magnification Only (Penumbra OFF) ─────────
+    # SID=100, ODD=33 → SOD=67 → M = 100/67 ≈ 1.5x
+    radiograph_mag = simulator.apply_geometric_effects(
+        radiograph,
+        SID=100.0,
+        ODD=33.0,
+        focal_spot_size=0.06,
+        apply_magnification=True,
+        apply_penumbra=False       # OFF to isolate magnification
+    )
+    print(f"✓ Original shape:       {radiograph.shape}")
     print(f"✓ Magnified (1.5x) shape: {radiograph_mag.shape}")
-    
-    # Test penumbra
-    radiograph_blur = simulator.apply_geometric_effects(radiograph, magnification=1.0, penumbra=3.0)
-    
+
+    # ── Test 2: Penumbra Only (Magnification OFF) ─────────
+    # SID=100, ODD=50 → SOD=50 → P = 0.06 × (50/50) = 0.06 cm = 0.6 px
+    radiograph_blur = simulator.apply_geometric_effects(
+        radiograph,
+        SID=100.0,
+        ODD=50.0,
+        focal_spot_size=0.06,
+        apply_magnification=False,  # OFF to isolate penumbra
+        apply_penumbra=True
+    )
     blur_std = np.std(radiograph_blur - radiograph)
     print(f"✓ Penumbra applied - Blur effect std: {blur_std:.2f}")
+
+    # ── Test 3: Both Effects Together ─────────────────────
+    # SID=100, ODD=50 → SOD=50 → M=2.0x, P=0.06cm
+    radiograph_both = simulator.apply_geometric_effects(
+        radiograph,
+        SID=100.0,
+        ODD=50.0,
+        focal_spot_size=0.06,
+        apply_magnification=True,
+        apply_penumbra=True
+    )
+    print(f"✓ Both effects applied - Mean: {radiograph_both.mean():.2f}")
+
+    # ── Test 4: No Effect (ODD=0) ─────────────────────────
+    radiograph_none = simulator.apply_geometric_effects(
+        radiograph,
+        SID=100.0,
+        ODD=0.0,
+        focal_spot_size=0.06,
+        apply_magnification=True,
+        apply_penumbra=True
+    )
+    assert np.allclose(radiograph, radiograph_none), "ODD=0 should produce no change"
+    print(f"✓ ODD=0 produces no change (as expected)")
+
     print(f"✓ Geometric effects working correctly")
-    
     return True
 
 
