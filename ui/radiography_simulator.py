@@ -26,7 +26,8 @@ class RadiographySimulator(QMainWindow):
         # Physics engine
         self.physics = BeerLambertSimulator()
         self.phantom = None
-        self.current_radiograph = None
+        self.current_radiograph = None   # modified result (display only)
+        self.base_radiograph = None      # original simulation output (never overwritten)
         
         # Create UI
         self.init_ui()
@@ -179,53 +180,133 @@ class RadiographySimulator(QMainWindow):
         """Create Geometric Effects tab"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
-        # Magnification
-        mag_group = QGroupBox("Magnification (Object-to-Detector Distance)")
-        mag_layout = QGridLayout()
-        
-        mag_label = QLabel("Magnification Factor:")
-        self.mag_slider = QSlider(Qt.Horizontal)
-        self.mag_slider.setRange(100, 300)  # 1.0x to 3.0x
-        self.mag_slider.setValue(100)
-        self.mag_value_label = QLabel("1.0x")
-        self.mag_slider.valueChanged.connect(
-            lambda: self.mag_value_label.setText(f"{self.mag_slider.value()/100:.2f}x")
-        )
-        mag_layout.addWidget(mag_label, 0, 0)
-        mag_layout.addWidget(self.mag_slider, 0, 1)
-        mag_layout.addWidget(self.mag_value_label, 0, 2)
-        
-        mag_group.setLayout(mag_layout)
-        layout.addWidget(mag_group)
-        
-        # Penumbra (edge unsharpness)
-        penumbra_group = QGroupBox("Penumbra (Focal Spot Effect)")
-        penumbra_layout = QGridLayout()
-        
-        penumbra_label = QLabel("Blur Radius (pixels):")
-        self.penumbra_slider = QSlider(Qt.Horizontal)
-        self.penumbra_slider.setRange(0, 100)  # 0 to 10 pixels
-        self.penumbra_slider.setValue(0)
-        self.penumbra_value_label = QLabel("0.0px")
-        self.penumbra_slider.valueChanged.connect(
-            lambda: self.penumbra_value_label.setText(f"{self.penumbra_slider.value()/10:.1f}px")
-        )
-        penumbra_layout.addWidget(penumbra_label, 0, 0)
-        penumbra_layout.addWidget(self.penumbra_slider, 0, 1)
-        penumbra_layout.addWidget(self.penumbra_value_label, 0, 2)
-        
-        penumbra_group.setLayout(penumbra_layout)
-        layout.addWidget(penumbra_group)
-        
-        # Apply button
+
+        # ── SID Control (Constant) ────────────────────────────
+        sid_group = QGroupBox("Source-to-Image Distance (SID) - Fixed")
+        sid_layout = QGridLayout()
+
+        sid_label = QLabel("SID (cm):")
+        self.sid_spinbox = QDoubleSpinBox()
+        self.sid_spinbox.setRange(50.0, 300.0)
+        self.sid_spinbox.setValue(100.0)
+        self.sid_spinbox.setSingleStep(5.0)
+        self.sid_spinbox.setSuffix(" cm")
+        self.sid_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
+        sid_layout.addWidget(sid_label, 0, 0)
+        sid_layout.addWidget(self.sid_spinbox, 0, 1)
+
+        sid_group.setLayout(sid_layout)
+        layout.addWidget(sid_group)
+
+        # ── ODD Control (Variable) ────────────────────────────
+        odd_group = QGroupBox("Object-to-Detector Distance (ODD) - Variable")
+        odd_layout = QGridLayout()
+
+        odd_label = QLabel("ODD (cm):")
+        self.odd_slider = QSlider(Qt.Horizontal)
+        self.odd_slider.setRange(0, int(self.sid_spinbox.value()))  # 0 to SID value
+        self.odd_slider.setValue(0)
+        self.odd_value_label = QLabel("0 cm")
+        self.odd_slider.valueChanged.connect(lambda: self._update_geo_labels())
+        odd_layout.addWidget(odd_label, 0, 0)
+        odd_layout.addWidget(self.odd_slider, 0, 1)
+        odd_layout.addWidget(self.odd_value_label, 0, 2)
+
+        odd_group.setLayout(odd_layout)
+        layout.addWidget(odd_group)
+
+        # ── Focal Spot Size Control ───────────────────────────
+        focal_group = QGroupBox("Focal Spot Size")
+        focal_layout = QGridLayout()
+
+        focal_label = QLabel("Focal Spot Size (cm):")
+        self.focal_spinbox = QDoubleSpinBox()
+        self.focal_spinbox.setRange(0.01, 0.30)
+        self.focal_spinbox.setValue(0.06)       # 0.6 mm typical
+        self.focal_spinbox.setSingleStep(0.01)
+        self.focal_spinbox.setSuffix(" cm")
+        self.focal_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
+        focal_layout.addWidget(focal_label, 0, 0)
+        focal_layout.addWidget(self.focal_spinbox, 0, 1)
+
+        focal_group.setLayout(focal_layout)
+        layout.addWidget(focal_group)
+
+        # ── Live Preview Labels ───────────────────────────────
+        preview_group = QGroupBox("Calculated Values (Live Preview)")
+        preview_layout = QGridLayout()
+
+        self.sod_result_label    = QLabel("SOD = SID - ODD = 100.0 cm")
+        self.mag_result_label    = QLabel("Magnification: 1.000x")
+        self.penumbra_result_label = QLabel("Penumbra: 0.0000 cm (0.00 px)")
+
+        preview_layout.addWidget(self.sod_result_label,     0, 0)
+        preview_layout.addWidget(self.mag_result_label,     1, 0)
+        preview_layout.addWidget(self.penumbra_result_label,2, 0)
+
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+
+        # ── Apply Button ──────────────────────────────────────
+        # ── Penumbra Toggle ───────────────────────────────────
+        self.penumbra_checkbox = QCheckBox("Apply Penumbra Effect (Focal Spot Blurring)")
+        self.penumbra_checkbox.setChecked(True)   # ON by default
+        layout.addWidget(self.penumbra_checkbox)
+
+        # ── Magnification Toggle ──────────────────────────────
+        self.magnification_checkbox = QCheckBox("Apply Magnification Effect")
+        self.magnification_checkbox.setChecked(True)   # ON by default
+        layout.addWidget(self.magnification_checkbox)
+
+        # ── Apply Button ──────────────────────────────────────
         apply_btn = QPushButton("Apply Geometric Effects")
         apply_btn.clicked.connect(self.apply_geometric_effects)
         layout.addWidget(apply_btn)
-        
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _update_geo_labels(self):
+        """Update live preview labels when SID/ODD/focal spot changes."""
+        SID   = self.sid_spinbox.value()
+        ODD   = float(self.odd_slider.value())
+        focal = self.focal_spinbox.value()
+
+        # ── Update ODD slider max to match SID ────────────────
+        # ODD must always be between 0 and SID
+        self.odd_slider.setMaximum(int(SID))
+
+        # Clamp ODD if it exceeds new SID value
+        if ODD > SID:
+            self.odd_slider.setValue(int(SID) - 1)
+            ODD = float(self.odd_slider.value())
+
+        # ── Core Logic ────────────────────────────────────────
+        # SID is constant, ODD is variable, SOD is calculated
+        SOD = SID - ODD
+
+        # Safety check
+        if SOD <= 0:
+            self.odd_value_label.setText(f"{ODD:.0f} cm")
+            self.sod_result_label.setText("⚠ ODD must be less than SID!")
+            self.mag_result_label.setText("Magnification: N/A")
+            self.penumbra_result_label.setText("Penumbra: N/A")
+            return
+
+        magnification = SID / SOD
+        penumbra_cm   = focal * (ODD / SOD)
+        penumbra_px   = penumbra_cm / self.physics.voxel_size_cm
+
+        # Update all labels
+        self.odd_value_label.setText(f"{ODD:.0f} cm")
+        self.sod_result_label.setText(
+            f"SOD = SID - ODD = {SID:.1f} - {ODD:.1f} = {SOD:.1f} cm"
+        )
+        self.mag_result_label.setText(f"Magnification: {magnification:.3f}x")
+        self.penumbra_result_label.setText(
+            f"Penumbra: {penumbra_cm:.4f} cm ({penumbra_px:.2f} px)"
+        )   
     
     def create_dualenergy_tab(self) -> QWidget:
         """Create Dual-Energy Subtraction tab"""
@@ -361,6 +442,7 @@ class RadiographySimulator(QMainWindow):
                 radiograph = self.physics.apply_poisson_noise(radiograph)
             
             self.current_radiograph = radiograph
+            self.base_radiograph = radiograph.copy()   # save original
             if self.show_phantom_checkbox.isChecked():
                 self.display_phantom_and_radiograph(radiograph, f"Radiograph (I₀={dose}, {energy})")
             else:
@@ -458,23 +540,56 @@ class RadiographySimulator(QMainWindow):
             print(f"[ERROR] {e}")
     
     def apply_geometric_effects(self):
-        """Apply geometric effects to current radiograph"""
         try:
-            if self.current_radiograph is None:
-                self.status_label.setText("✗ No radiograph loaded. Simulate first.")
+            if self.base_radiograph is None:      # ← check base not current
+                self.status_label.setText("✗ No radiograph loaded. Simulate first (Tab 1).")
                 return
-            
-            mag = self.mag_slider.value() / 100.0
-            penumbra = self.penumbra_slider.value() / 10.0
-            
+    
+            # Read physical parameters from UI
+            SID             = self.sid_spinbox.value()
+            ODD             = float(self.odd_slider.value())
+            focal_spot_size = self.focal_spinbox.value()
+    
+            # Calculate SOD from SID and ODD
+            SOD = SID - ODD
+    
+            # Safety check
+            if SOD <= 0:
+                self.status_label.setText("✗ ODD must be less than SID!")
+                return
+    
+            # Calculate derived values for display
+            magnification = SID / SOD
+            penumbra_cm   = focal_spot_size * (ODD / SOD)
+            penumbra_px   = penumbra_cm / self.physics.voxel_size_cm
+    
+            # Read toggles from UI
+            apply_magnification = self.magnification_checkbox.isChecked()
+            apply_penumbra      = self.penumbra_checkbox.isChecked()
+    
+            # Apply physics
             radiograph = self.physics.apply_geometric_effects(
-                self.current_radiograph, mag, penumbra
+                self.base_radiograph,
+                SID=SID,
+                ODD=ODD,
+                focal_spot_size=focal_spot_size,
+                apply_magnification=apply_magnification,
+                apply_penumbra=apply_penumbra
             )
-            
-            self.current_radiograph = radiograph
-            self.display_radiograph(radiograph, f"Radiograph (Mag={mag:.2f}x, Penumbra={penumbra:.1f}px)")
-            self.status_label.setText(f"✓ Geometric effects applied")
-            
+    
+            self.current_radiograph = radiograph  # ← update current for display only
+            self.display_radiograph(
+                radiograph,
+                f"Geometric Effects | SID={SID}cm  ODD={ODD}cm  SOD={SOD:.1f}cm\n"
+                f"Magnification={magnification:.3f}x | Penumbra={penumbra_cm:.4f}cm ({penumbra_px:.2f}px)"
+            )
+            self.status_label.setText(
+                f"✓ Geometric effects applied | "
+                f"SOD={SOD:.1f}cm | ODD={ODD:.1f}cm | "
+                f"M={magnification:.3f}x | "
+                f"Penumbra={penumbra_cm:.4f}cm ({penumbra_px:.2f}px)"
+            )
+    
         except Exception as e:
             self.status_label.setText(f"✗ Error: {str(e)}")
             print(f"[ERROR] {e}")
