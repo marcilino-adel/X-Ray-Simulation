@@ -79,8 +79,8 @@ class BeerLambertSimulator:
             phantom[z][mask_soft] = 1
 
         # Bone structures through central depth range
-        z_start = int(depth * 0.25)
-        z_end = int(depth * 0.75)
+        z_start = int(depth * 0.40)  # was 0.25
+        z_end = int(depth * 0.60)  # was 0.75
         spine_width = max(8, width // 12)
         phantom[z_start:z_end, center_y - 50:center_y + 50, center_x - spine_width // 2:center_x + spine_width // 2] = 2
 
@@ -196,18 +196,18 @@ class BeerLambertSimulator:
         if return_mask_2d:
             return phantom_with_pathology, lesion_mask_2d
         return phantom_with_pathology
-    
-    def simulate_acquisition(self, phantom: np.ndarray, I0: int = None, 
+
+    def simulate_acquisition(self, phantom: np.ndarray, I0: int = None,
                             energy: str = None) -> np.ndarray:
         """
         Simulate X-ray acquisition using Beer-Lambert law.
         I = I₀ * e^(-μx)
-        
+
         Args:
             phantom: 3D phantom (material type per voxel)
             I0: Initial photon count (dose). If None, use default.
             energy: 'low' (80 kVp) or 'high' (120 kVp)
-            
+
         Returns:
             2D radiograph (projected intensity)
         """
@@ -215,35 +215,41 @@ class BeerLambertSimulator:
             self.I0 = I0
         if energy is not None:
             self.energy = energy
-            
+
         print(f"[Physics] Simulating acquisition: I₀={self.I0}, Energy={self.energy} kVp")
-        
+
         # Ensure 3D representation: (depth, height, width)
         phantom_3d, _ = self._ensure_3d(phantom)
 
         # Build voxel attenuation map
         mu_volume = np.zeros_like(phantom_3d, dtype=np.float64)
-        
+
         # Get attenuation coefficients for current energy
         attenuation = {}
         for material, coeff in self.ATTENUATION_COEFFICIENTS.items():
             attenuation[material] = coeff[self.energy]
-        
+
         # Material index to key mapping
         material_map = {0: 'air', 1: 'soft_tissue', 2: 'bone', 3: 'dense', 4: 'fracture'}
-        
+
+
         # Apply Beer-Lambert law
         # μx is the integrated attenuation coefficient times path length
         for mat_id, material_name in material_map.items():
             mu = attenuation[material_name]
             mu_volume[phantom_3d == mat_id] = mu
 
+        # Bone voxel = bone material + embedded soft tissue equivalent
+        mu_volume[phantom_3d == 2] = attenuation['bone'] + attenuation['soft_tissue']
+        mu_volume[phantom_3d == 3] = attenuation['dense'] + attenuation['soft_tissue']
+        mu_volume[phantom_3d == 4] = attenuation['fracture'] + attenuation['soft_tissue']
+
         # Line integral along beam direction (depth axis)
         mu_x = np.sum(mu_volume, axis=0) * self.voxel_size_cm
-        
+
         # Apply Beer-Lambert: I = I₀ * e^(-μx)
         intensity = self.I0 * np.exp(-mu_x)
-        
+
         return intensity
     
     def apply_poisson_noise(self, radiograph: np.ndarray) -> np.ndarray:
@@ -488,23 +494,35 @@ class BeerLambertSimulator:
         img_high = self.simulate_acquisition(phantom, I0_high, energy='high')
         img_high_noisy = self.apply_poisson_noise(img_high)
         
-        masks = self.get_projected_material_masks(phantom)
 
-        # Calibrate subtraction weights from suppression ROI
+        # ... (بعد الحصول على img_low_noisy و img_high_noisy) ...
+
         eps = 1e-6
-        if tissue_target == 'soft_tissue':
-            suppress_mask = masks['bone']
-            k = float(np.mean(img_low_noisy[suppress_mask]) / (np.mean(img_high_noisy[suppress_mask]) + eps))
-            weight_low, weight_high = 1.0, k
-            subtracted = (weight_low * img_low_noisy) - (weight_high * img_high_noisy)
-        else:
-            suppress_mask = masks['soft_tissue']
-            k = float(np.mean(img_high_noisy[suppress_mask]) / (np.mean(img_low_noisy[suppress_mask]) + eps))
-            weight_low, weight_high = k, 1.0
-            subtracted = (weight_high * img_high_noisy) - (weight_low * img_low_noisy)
+        s_low = -np.log((img_low_noisy + eps) / I0_low)
+        s_high = -np.log((img_high_noisy + eps) / I0_high)
 
-        self.last_dual_weights = (weight_low, weight_high)
-        
-        print(f"[Physics] Dual-Energy subtraction complete (target: {tissue_target})")
-        
+        if tissue_target == 'soft_tissue':
+            mu_low_bone = self.ATTENUATION_COEFFICIENTS['bone']['low']
+            mu_high_bone = self.ATTENUATION_COEFFICIENTS['bone']['high']
+
+            weight = mu_high_bone / mu_low_bone
+            subtracted = s_high - (weight * s_low)
+            self.last_dual_weights = (weight, 1.0)
+
+
+        else:
+            mu_low_tissue = self.ATTENUATION_COEFFICIENTS['soft_tissue']['low']
+            mu_high_tissue = self.ATTENUATION_COEFFICIENTS['soft_tissue']['high']
+
+            weight = mu_low_tissue / mu_high_tissue
+
+            subtracted = s_low - (weight * s_high)
+            self.last_dual_weights = (1.0, weight)
+
+        # منع القيم السالبة كما فعلت في كودك السابق
+        subtracted = np.clip(subtracted, 0, None)
+
+
+
+
         return img_low_noisy, img_high_noisy, subtracted

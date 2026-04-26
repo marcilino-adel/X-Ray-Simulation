@@ -319,14 +319,14 @@ class RadiographySimulator(QMainWindow):
         
         dose_low_label = QLabel("Low Energy (80 kVp) Dose:")
         self.dose_low_spinbox = QSpinBox()
-        self.dose_low_spinbox.setRange(100, 50000)
+        self.dose_low_spinbox.setRange(100, 1000000)
         self.dose_low_spinbox.setValue(8000)
         dose_layout.addWidget(dose_low_label, 0, 0)
         dose_layout.addWidget(self.dose_low_spinbox, 0, 1)
         
         dose_high_label = QLabel("High Energy (120 kVp) Dose:")
         self.dose_high_spinbox = QSpinBox()
-        self.dose_high_spinbox.setRange(100, 50000)
+        self.dose_high_spinbox.setRange(100, 1000000)
         self.dose_high_spinbox.setValue(8000)
         dose_layout.addWidget(dose_high_label, 1, 0)
         dose_layout.addWidget(self.dose_high_spinbox, 1, 1)
@@ -619,7 +619,7 @@ class RadiographySimulator(QMainWindow):
             ax2.axis('off')
             
             ax3 = self.figure.add_subplot(133)
-            im3 = ax3.imshow(subtracted, cmap='seismic')
+            im3 = ax3.imshow(subtracted, cmap='bone')
             ax3.set_title(f'Subtracted\n(Target: {tissue})')
             ax3.axis('off')
             
