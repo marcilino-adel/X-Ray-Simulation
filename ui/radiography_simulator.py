@@ -53,7 +53,7 @@ class RadiographySimulator(QMainWindow):
         self.tabs.addTab(self.create_dose_noise_tab(), "Dose-Noise Analysis")
         
         # Tab 3: Geometric Effects
-        self.tabs.addTab(self.create_geometric_tab(), "Geometric Effects")
+        # self.tabs.addTab(self.create_geometric_tab(), "Geometric Effects")
         
         # Tab 4: Dual-Energy
         self.tabs.addTab(self.create_dualenergy_tab(), "Dual-Energy")
@@ -121,148 +121,79 @@ class RadiographySimulator(QMainWindow):
         return widget
     
     def create_dose_noise_tab(self) -> QWidget:
-        """Create Dose-Noise Analysis tab"""
+        """Create Dose-Noise Analysis tab (Modified Version)"""
         widget = QWidget()
         layout = QVBoxLayout()
         
-        # Dose range
-        dose_range_group = QGroupBox("Dose Range Study")
-        dose_range_layout = QGridLayout()
+        # --- Top Section: Dashboard (Controls + Metrics Side-by-Side) ---
+        dashboard_layout = QHBoxLayout()
         
-        dose_min_label = QLabel("Min Dose (I₀):")
-        self.dose_min_spinbox = QSpinBox()
-        self.dose_min_spinbox.setRange(10, 10000)
-        self.dose_min_spinbox.setValue(500)
-        dose_range_layout.addWidget(dose_min_label, 0, 0)
-        dose_range_layout.addWidget(self.dose_min_spinbox, 0, 1)
+        # 1. Left Side of Tab: Controls
+        controls_group = QGroupBox("Dose & Phantom Controls")
+        controls_layout = QVBoxLayout()
         
-        dose_max_label = QLabel("Max Dose (I₀):")
-        self.dose_max_spinbox = QSpinBox()
-        self.dose_max_spinbox.setRange(1000, 50000)
-        self.dose_max_spinbox.setValue(20000)
-        dose_range_layout.addWidget(dose_max_label, 1, 0)
-        dose_range_layout.addWidget(self.dose_max_spinbox, 1, 1)
+        controls_layout.addWidget(QLabel("Select Phantom Anatomy:"))
+        self.dn_phantom_combo = QComboBox()
+        self.dn_phantom_combo.addItems(["Chest Phantom (Complete)", "Bone Only Phantom", "Soft Tissue Only Phantom"])
+        controls_layout.addWidget(self.dn_phantom_combo)
         
-        dose_range_group.setLayout(dose_range_layout)
-        layout.addWidget(dose_range_group)
+        self.btn_gen_dn_phantom = QPushButton("Generate New Phantom")
+        self.btn_gen_dn_phantom.clicked.connect(self.analyze_dose_noise)
+        self.btn_gen_dn_phantom.setStyleSheet("background-color: #2C3E50; color: white; font-weight: bold;")
+        controls_layout.addWidget(self.btn_gen_dn_phantom)
         
-        # Number of steps
-        steps_label = QLabel("Number of Comparisons:")
-        self.steps_spinbox = QSpinBox()
-        self.steps_spinbox.setRange(2, 10)
-        self.steps_spinbox.setValue(5)
-        layout.addWidget(steps_label)
-        layout.addWidget(self.steps_spinbox)
-
-        repeats_label = QLabel("Noise Realizations per Dose:")
-        self.repeats_spinbox = QSpinBox()
-        self.repeats_spinbox.setRange(1, 20)
-        self.repeats_spinbox.setValue(3)
-        layout.addWidget(repeats_label)
-        layout.addWidget(self.repeats_spinbox)
+        controls_layout.addSpacing(15)
         
-        # Analyze button
-        analyze_btn = QPushButton("Analyze Dose-Noise Trade-off")
-        analyze_btn.clicked.connect(self.analyze_dose_noise)
-        layout.addWidget(analyze_btn)
+        controls_layout.addWidget(QLabel("Dose Intensity (I₀):"))
+        self.dn_dose_slider = QSlider(Qt.Horizontal)
+        self.dn_dose_slider.setRange(100, 50000)
+        self.dn_dose_slider.setValue(10000)
+        self.dn_dose_slider.setTickPosition(QSlider.TicksBelow)
+        self.dn_dose_slider.setTickInterval(5000)
+        controls_layout.addWidget(self.dn_dose_slider)
         
-        # SNR calculation
-        snr_label = QLabel("SNR Analysis:")
-        self.snr_label = QLabel("Ready for analysis")
-        layout.addWidget(snr_label)
-        layout.addWidget(self.snr_label)
+        self.dn_dose_val_label = QLabel("I₀ = 10000")
+        self.dn_dose_val_label.setStyleSheet("font-weight: bold; color: #2980B9;")
+        self.dn_dose_slider.valueChanged.connect(
+            lambda: self.dn_dose_val_label.setText(f"I₀ = {self.dn_dose_slider.value()}")
+        )
+        controls_layout.addWidget(self.dn_dose_val_label)
         
-        layout.addStretch()
-        widget.setLayout(layout)
-        return widget
-    
-    def create_geometric_tab(self) -> QWidget:
-        """Create Geometric Effects tab"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        # ── SID Control (Constant) ────────────────────────────
-        sid_group = QGroupBox("Source-to-Image Distance (SID) - Fixed")
-        sid_layout = QGridLayout()
-
-        sid_label = QLabel("SID (cm):")
-        self.sid_spinbox = QDoubleSpinBox()
-        self.sid_spinbox.setRange(50.0, 300.0)
-        self.sid_spinbox.setValue(100.0)
-        self.sid_spinbox.setSingleStep(5.0)
-        self.sid_spinbox.setSuffix(" cm")
-        self.sid_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
-        sid_layout.addWidget(sid_label, 0, 0)
-        sid_layout.addWidget(self.sid_spinbox, 0, 1)
-
-        sid_group.setLayout(sid_layout)
-        layout.addWidget(sid_group)
-
-        # ── ODD Control (Variable) ────────────────────────────
-        odd_group = QGroupBox("Object-to-Detector Distance (ODD) - Variable")
-        odd_layout = QGridLayout()
-
-        odd_label = QLabel("ODD (cm):")
-        self.odd_slider = QSlider(Qt.Horizontal)
-        self.odd_slider.setRange(0, int(self.sid_spinbox.value()))  # 0 to SID value
-        self.odd_slider.setValue(0)
-        self.odd_value_label = QLabel("0 cm")
-        self.odd_slider.valueChanged.connect(lambda: self._update_geo_labels())
-        odd_layout.addWidget(odd_label, 0, 0)
-        odd_layout.addWidget(self.odd_slider, 0, 1)
-        odd_layout.addWidget(self.odd_value_label, 0, 2)
-
-        odd_group.setLayout(odd_layout)
-        layout.addWidget(odd_group)
-
-        # ── Focal Spot Size Control ───────────────────────────
-        focal_group = QGroupBox("Focal Spot Size")
-        focal_layout = QGridLayout()
-
-        focal_label = QLabel("Focal Spot Size (cm):")
-        self.focal_spinbox = QDoubleSpinBox()
-        self.focal_spinbox.setRange(0.01, 0.30)
-        self.focal_spinbox.setValue(0.06)       # 0.6 mm typical
-        self.focal_spinbox.setSingleStep(0.01)
-        self.focal_spinbox.setSuffix(" cm")
-        self.focal_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
-        focal_layout.addWidget(focal_label, 0, 0)
-        focal_layout.addWidget(self.focal_spinbox, 0, 1)
-
-        focal_group.setLayout(focal_layout)
-        layout.addWidget(focal_group)
-
-        # ── Live Preview Labels ───────────────────────────────
-        preview_group = QGroupBox("Calculated Values (Live Preview)")
-        preview_layout = QGridLayout()
-
-        self.sod_result_label    = QLabel("SOD = SID - ODD = 100.0 cm")
-        self.mag_result_label    = QLabel("Magnification: 1.000x")
-        self.penumbra_result_label = QLabel("Penumbra: 0.0000 cm (0.00 px)")
-
-        preview_layout.addWidget(self.sod_result_label,     0, 0)
-        preview_layout.addWidget(self.mag_result_label,     1, 0)
-        preview_layout.addWidget(self.penumbra_result_label,2, 0)
-
-        preview_group.setLayout(preview_layout)
-        layout.addWidget(preview_group)
-
-        # ── Apply Button ──────────────────────────────────────
-        # ── Penumbra Toggle ───────────────────────────────────
-        self.penumbra_checkbox = QCheckBox("Apply Penumbra Effect (Focal Spot Blurring)")
-        self.penumbra_checkbox.setChecked(True)   # ON by default
-        layout.addWidget(self.penumbra_checkbox)
-
-        # ── Magnification Toggle ──────────────────────────────
-        self.magnification_checkbox = QCheckBox("Apply Magnification Effect")
-        self.magnification_checkbox.setChecked(True)   # ON by default
-        layout.addWidget(self.magnification_checkbox)
-
-        # ── Apply Button ──────────────────────────────────────
-        apply_btn = QPushButton("Apply Geometric Effects")
-        apply_btn.clicked.connect(self.apply_geometric_effects)
-        layout.addWidget(apply_btn)
-
+        controls_layout.addSpacing(15)
+        
+        self.btn_analyze_dn = QPushButton("Apply Dose & Analyze Quality")
+        self.btn_analyze_dn.clicked.connect(self.analyze_dose_noise)
+        self.btn_analyze_dn.setStyleSheet("background-color: #27AE60; color: white; font-weight: bold; padding: 10px;")
+        controls_layout.addWidget(self.btn_analyze_dn)
+        
+        controls_layout.addStretch()
+        controls_group.setLayout(controls_layout)
+        dashboard_layout.addWidget(controls_group, stretch=1)
+        
+        # 2. Right Side of Tab: Live Metrics View
+        metrics_group = QGroupBox("Live Diagnostic Metrics")
+        metrics_layout = QVBoxLayout()
+        
+        self.dn_metric_snr = QLabel("SNR: --")
+        self.dn_metric_snr.setStyleSheet("font-size: 16px; font-weight: bold;")
+        
+        self.dn_metric_cnr = QLabel("CNR: --")
+        self.dn_metric_cnr.setStyleSheet("font-size: 16px; font-weight: bold;")
+        
+        self.dn_metric_status = QLabel("Status: Waiting to apply dose...")
+        self.dn_metric_status.setStyleSheet("font-size: 14px; font-weight: bold; color: gray;")
+        self.dn_metric_status.setWordWrap(True)
+        
+        metrics_layout.addWidget(self.dn_metric_snr)
+        metrics_layout.addWidget(self.dn_metric_cnr)
+        metrics_layout.addSpacing(10)
+        metrics_layout.addWidget(self.dn_metric_status)
+        metrics_layout.addStretch()
+        
+        metrics_group.setLayout(metrics_layout)
+        dashboard_layout.addWidget(metrics_group, stretch=1)
+        
+        layout.addLayout(dashboard_layout)
         layout.addStretch()
         widget.setLayout(layout)
         return widget
@@ -454,89 +385,97 @@ class RadiographySimulator(QMainWindow):
             print(f"[ERROR] {e}")
     
     def analyze_dose_noise(self):
-        """Analyze dose-noise trade-off"""
+        """Simulate single dose on selected phantom and update global canvas"""
         try:
-            min_dose = self.dose_min_spinbox.value()
-            max_dose = self.dose_max_spinbox.value()
-            steps = self.steps_spinbox.value()
-            repeats = self.repeats_spinbox.value()
-
-            if min_dose >= max_dose:
-                self.status_label.setText("✗ Min dose must be less than max dose")
-                return
+            self.status_label.setText("Simulating dose application...")
             
-            doses = np.linspace(min_dose, max_dose, steps, dtype=int)
-            snr_means = []
-            snr_stds = []
-            cnr_means = []
+            # 1. Generate and Filter Phantom based on selection
+            # We generate a fresh base phantom so we don't permanently corrupt the original
+            base_phantom = self.physics.create_digital_phantom(256, 256, 64)
+            self.physics.add_synthetic_pathology(base_phantom, 'nodule', severity=1.0)
+            
+            selection = self.dn_phantom_combo.currentIndex()
+            if selection == 1:
+                # Bone Only: Convert Soft Tissue (1) to Air (0)
+                base_phantom[base_phantom == 1] = 0
+            elif selection == 2:
+                # Soft Tissue Only: Convert Bone (2) to Soft Tissue (1)
+                base_phantom[base_phantom == 2] = 1
+                
+            self.phantom = base_phantom # Update the global phantom for consistency
 
+            dose = self.dn_dose_slider.value()
+            
+            # 2. Simulate physics
+            ideal = self.physics.simulate_acquisition(self.phantom, dose, 'high')
+            noisy = self.physics.apply_poisson_noise(ideal)
+            
+            # 3. Extract masks for metrics
             masks = self.physics.get_projected_material_masks(self.phantom)
             signal_mask = masks['soft_tissue'] & ~masks['bone']
             noise_mask = masks['air'] & ~masks['soft_tissue']
-
-            # Fallback masks if anatomy overlap removes too many pixels
+            
+            # Fallback if strict masks are empty due to filtering
             if np.count_nonzero(signal_mask) < 50:
-                signal_mask = masks['soft_tissue']
+                signal_mask = masks['soft_tissue'] if np.count_nonzero(masks['soft_tissue']) > 0 else np.ones_like(ideal, dtype=bool)
             if np.count_nonzero(noise_mask) < 50:
-                noise_mask = masks['air']
+                noise_mask = masks['air'] if np.count_nonzero(masks['air']) > 0 else np.ones_like(ideal, dtype=bool)
+                
+            # 4. Calculate SNR and CNR
+            signal_vals = noisy[signal_mask]
+            noise_vals = noisy[noise_mask]
             
+            mean_sig = float(np.mean(signal_vals))
+            std_sig = float(np.std(signal_vals))
+            mean_noise = float(np.mean(noise_vals))
+            std_noise = float(np.std(noise_vals))
+            
+            snr = mean_sig / (std_sig + 1e-6)
+            cnr = abs(mean_sig - mean_noise) / (std_noise + 1e-6)
+            
+            # 5. Update Metrics inside the Tab
+            self.dn_metric_snr.setText(f"SNR: {snr:.2f}")
+            self.dn_metric_cnr.setText(f"CNR: {cnr:.2f}")
+            
+            if snr > 15:
+                status_text = "Diagnostic Quality: EXCELLENT\nHigh clarity, minimal quantum mottle."
+                self.dn_metric_status.setStyleSheet("font-size: 14px; font-weight: bold; color: green;")
+            elif snr > 7:
+                status_text = "Diagnostic Quality: ACCEPTABLE\nVisible noise, but structures are distinguishable."
+                self.dn_metric_status.setStyleSheet("font-size: 14px; font-weight: bold; color: orange;")
+            else:
+                status_text = "Diagnostic Quality: POOR\nHeavy quantum noise obscures critical details."
+                self.dn_metric_status.setStyleSheet("font-size: 14px; font-weight: bold; color: red;")
+                
+            self.dn_metric_status.setText(status_text)
+            
+            # 6. Update the GLOBAL right-side Canvas
             self.figure.clear()
-            ax = self.figure.add_subplot(111)
             
-            for dose in doses:
-                snr_rep = []
-                cnr_rep = []
-
-                for _ in range(repeats):
-                    radiograph = self.physics.simulate_acquisition(self.phantom, dose, 'high')
-                    radiograph = self.physics.apply_poisson_noise(radiograph)
-
-                    signal_values = radiograph[signal_mask]
-                    noise_values = radiograph[noise_mask]
-
-                    mean_signal = float(np.mean(signal_values))
-                    std_signal = float(np.std(signal_values))
-                    mean_noise = float(np.mean(noise_values))
-                    std_noise = float(np.std(noise_values))
-
-                    snr = mean_signal / (std_signal + 1e-6)
-                    cnr = abs(mean_signal - mean_noise) / (std_noise + 1e-6)
-                    snr_rep.append(snr)
-                    cnr_rep.append(cnr)
-
-                snr_means.append(float(np.mean(snr_rep)))
-                snr_stds.append(float(np.std(snr_rep)))
-                cnr_means.append(float(np.mean(cnr_rep)))
+            # Plot 1: Visual Image Quality
+            ax1 = self.figure.add_subplot(121)
+            im = ax1.imshow(noisy, cmap='gray', vmin=0, vmax=dose)
+            ax1.set_title(f"Simulated Clinical Radiograph\n(Dose I₀ = {dose})")
+            ax1.axis('off')
             
-            # Plot
-            ax.errorbar(
-                doses,
-                snr_means,
-                yerr=snr_stds,
-                fmt='o-',
-                linewidth=2,
-                markersize=6,
-                capsize=3,
-                label='ROI SNR (mean ± std)'
-            )
-            ax.plot(doses, cnr_means, 's--', linewidth=2, markersize=5, label='ROI CNR')
-            ax.set_xlabel('Dose (I₀)')
-            ax.set_ylabel('Quality Metric')
-            ax.set_title('Dose-Noise Trade-off (ROI-based SNR/CNR)')
-            ax.grid(True, alpha=0.3)
-            ax.legend()
+            # Plot 2: Quantitative Metrics Bar Chart
+            ax2 = self.figure.add_subplot(122)
+            ax2.bar(['SNR', 'CNR'], [snr, cnr], color=['#2980B9', '#27AE60'])
+            ax2.set_title("Quantitative Quality Scores")
+            ax2.set_ylabel("Metric Score")
+            ax2.grid(True, axis='y', alpha=0.3)
             
+            # Add an indicative line for minimum diagnostic SNR
+            ax2.axhline(7, color='red', linestyle='--', alpha=0.7, label='Diagnostic Threshold (SNR=7)')
+            ax2.legend()
+            
+            self.figure.tight_layout()
             self.canvas.draw()
             
-            snr_text = (
-                f"SNR: {min(snr_means):.2f}→{max(snr_means):.2f} | "
-                f"CNR: {min(cnr_means):.2f}→{max(cnr_means):.2f}"
-            )
-            self.snr_label.setText(snr_text)
-            self.status_label.setText(f"✓ Dose-noise analysis complete ({repeats} realizations/dose)")
+            self.status_label.setText(f"✓ Dose analysis complete. SNR = {snr:.2f}")
             
         except Exception as e:
-            self.status_label.setText(f"✗ Error: {str(e)}")
+            self.status_label.setText(f"✗ Error during analysis: {str(e)}")
             print(f"[ERROR] {e}")
     
     def apply_geometric_effects(self):
