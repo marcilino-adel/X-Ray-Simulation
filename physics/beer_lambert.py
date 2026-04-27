@@ -198,25 +198,29 @@ class BeerLambertSimulator:
         return phantom_with_pathology
 
     def simulate_acquisition(self, phantom: np.ndarray, I0: int = None,
-                            energy: str = None) -> np.ndarray:
+                             energy: str = None) -> np.ndarray:
         """
         Simulate X-ray acquisition using Beer-Lambert law.
         I = I₀ * e^(-μx)
 
         Args:
             phantom: 3D phantom (material type per voxel)
-            I0: Initial photon count (dose). If None, use default.
-            energy: 'low' (80 kVp) or 'high' (120 kVp)
+            I0: Initial photon count (baseline dose at 80 kVp). If None, use class default.
+            energy: 'low' (80 kVp) or 'high' (120 kVp). If None, use class default.
 
         Returns:
             2D radiograph (projected intensity)
         """
-        if I0 is not None:
-            self.I0 = I0
-        if energy is not None:
-            self.energy = energy
+        # Use local variables to avoid permanently mutating class state
+        current_I0 = I0 if I0 is not None else self.I0
+        current_energy = energy if energy is not None else self.energy
 
-        print(f"[Physics] Simulating acquisition: I₀={self.I0}, Energy={self.energy} kVp")
+        # 1. Physics: Scale initial photon count by (kVp)^2
+        # Assuming current_I0 represents the baseline intensity at 80 kVp
+        energy_kvp = 120 if current_energy == 'high' else 80
+        effective_I0 = current_I0 * ((energy_kvp / 80.0) ** 2)
+
+        print(f"[Physics] Simulating acquisition: Base I₀={current_I0}, Effective I₀={effective_I0:.1f}, Energy={current_energy} ({energy_kvp} kVp)")
 
         # Ensure 3D representation: (depth, height, width)
         phantom_3d, _ = self._ensure_3d(phantom)
@@ -227,28 +231,29 @@ class BeerLambertSimulator:
         # Get attenuation coefficients for current energy
         attenuation = {}
         for material, coeff in self.ATTENUATION_COEFFICIENTS.items():
-            attenuation[material] = coeff[self.energy]
-
-        # Material index to key mapping
-        material_map = {0: 'air', 1: 'soft_tissue', 2: 'bone', 3: 'dense', 4: 'fracture'}
-
+            attenuation[material] = coeff[current_energy]
 
         # Apply Beer-Lambert law
-        # μx is the integrated attenuation coefficient times path length
-        for mat_id, material_name in material_map.items():
-            mu = attenuation[material_name]
-            mu_volume[phantom_3d == mat_id] = mu
-
-        # Bone voxel = bone material + embedded soft tissue equivalent
-        mu_volume[phantom_3d == 2] = attenuation['bone'] + attenuation['soft_tissue']
-        mu_volume[phantom_3d == 3] = attenuation['dense'] + attenuation['soft_tissue']
-        mu_volume[phantom_3d == 4] = attenuation['fracture'] + attenuation['soft_tissue']
+        # Pure materials (100% volume fraction)
+        mu_volume[phantom_3d == 0] = attenuation['air']
+        mu_volume[phantom_3d == 1] = attenuation['soft_tissue']
+        
+        # 2. Logic: Use volume fractions for mixed voxels to conserve physical volume
+        # Example: Bone modeled as 60% mineral bone and 40% marrow (soft tissue)
+        mu_volume[phantom_3d == 2] = (0.6 * attenuation['bone']) + (0.4 * attenuation['soft_tissue'])
+        
+        # Example: Dense material modeled as 80% dense and 20% soft tissue
+        mu_volume[phantom_3d == 3] = (0.8 * attenuation['dense']) + (0.2 * attenuation['soft_tissue'])
+        
+        # Example: Fracture modeled as 50% fracture space (air/fluid) and 50% soft tissue
+        # Note: You can adjust these decimal fractions based on your specific phantom model
+        mu_volume[phantom_3d == 4] = (0.5 * attenuation['fracture']) + (0.5 * attenuation['soft_tissue'])
 
         # Line integral along beam direction (depth axis)
         mu_x = np.sum(mu_volume, axis=0) * self.voxel_size_cm
-
+        
         # Apply Beer-Lambert: I = I₀ * e^(-μx)
-        intensity = self.I0 * np.exp(-mu_x)
+        intensity = effective_I0 * np.exp(-mu_x)
 
         return intensity
     
