@@ -482,9 +482,16 @@ class RadiographySimulator(QMainWindow):
         try:
             self.status_label.setText("Simulating dose application...")
             
-            # 1. Generate and Filter Phantom based on selection
-            # We generate a fresh base phantom so we don't permanently corrupt the original
-            base_phantom = self.physics.create_digital_phantom(256, 256, 64)
+            # FIX: DO NOT call self.physics.create_digital_phantom here!
+            # It corrupts the Physics Engine's internal memory and breaks Dual Energy.
+            # Instead, we make a completely safe copy of the original phantom.
+            if self.phantom is None:
+                self.status_label.setText("✗ No phantom exists! Go to Tab 1 to simulate first.")
+                return
+                
+            base_phantom = self.phantom.copy()
+            
+            # Add pathology to our local copy safely
             self.physics.add_synthetic_pathology(base_phantom, 'nodule', severity=1.0)
             
             selection = self.dn_phantom_combo.currentIndex()
@@ -494,17 +501,15 @@ class RadiographySimulator(QMainWindow):
             elif selection == 2:
                 # Soft Tissue Only: Convert Bone (2) to Soft Tissue (1)
                 base_phantom[base_phantom == 2] = 1
-                
-            self.phantom = base_phantom # Update the global phantom for consistency
 
             dose = self.dn_dose_slider.value()
             
-            # 2. Simulate physics
-            ideal = self.physics.simulate_acquisition(self.phantom, dose, 'high')
+            # 2. Simulate physics using the local safe 'base_phantom'
+            ideal = self.physics.simulate_acquisition(base_phantom, dose, 'high')
             noisy = self.physics.apply_poisson_noise(ideal)
             
-            # 3. Extract masks for metrics
-            masks = self.physics.get_projected_material_masks(self.phantom)
+            # 3. Extract masks for metrics using the local 'base_phantom'
+            masks = self.physics.get_projected_material_masks(base_phantom)
             signal_mask = masks['soft_tissue'] & ~masks['bone']
             noise_mask = masks['air'] & ~masks['soft_tissue']
             
@@ -570,35 +575,35 @@ class RadiographySimulator(QMainWindow):
         except Exception as e:
             self.status_label.setText(f"✗ Error during analysis: {str(e)}")
             print(f"[ERROR] {e}")
-    
+
     def apply_geometric_effects(self):
         try:
             if self.base_radiograph is None:      # ← check base not current
                 self.status_label.setText("✗ No radiograph loaded. Simulate first (Tab 1).")
                 return
-    
+
             # Read physical parameters from UI
             SID             = self.sid_spinbox.value()
             ODD             = float(self.odd_slider.value())
             focal_spot_size = self.focal_spinbox.value()
-    
+
             # Calculate SOD from SID and ODD
             SOD = SID - ODD
-    
+
             # Safety check
             if SOD <= 0:
                 self.status_label.setText("✗ ODD must be less than SID!")
                 return
-    
+
             # Calculate derived values for display
             magnification = SID / SOD
             penumbra_cm   = focal_spot_size * (ODD / SOD)
             penumbra_px   = penumbra_cm / self.physics.voxel_size_cm
-    
+
             # Read toggles from UI
             apply_magnification = self.magnification_checkbox.isChecked()
             apply_penumbra      = self.penumbra_checkbox.isChecked()
-    
+
             # Apply physics
             radiograph = self.physics.apply_geometric_effects(
                 self.base_radiograph,
@@ -608,7 +613,7 @@ class RadiographySimulator(QMainWindow):
                 apply_magnification=apply_magnification,
                 apply_penumbra=apply_penumbra
             )
-    
+
             self.current_radiograph = radiograph  # ← update current for display only
             self.display_radiograph(
                 radiograph,
@@ -621,11 +626,11 @@ class RadiographySimulator(QMainWindow):
                 f"M={magnification:.3f}x | "
                 f"Penumbra={penumbra_cm:.4f}cm ({penumbra_px:.2f}px)"
             )
-    
+
         except Exception as e:
             self.status_label.setText(f"✗ Error: {str(e)}")
             print(f"[ERROR] {e}")
-    
+
     def perform_dual_energy(self):
         """Perform dual-energy subtraction"""
         try:
@@ -650,6 +655,7 @@ class RadiographySimulator(QMainWindow):
             ax2.set_title(f'High Energy (120 kVp)\nI₀={dose_high}')
             ax2.axis('off')
             
+            # FIX: Display raw subtracted data using 'bone' colormap without 0-1 limits
             ax3 = self.figure.add_subplot(133)
             im3 = ax3.imshow(subtracted, cmap='bone')
             ax3.set_title(f'Subtracted\n(Target: {tissue})')
