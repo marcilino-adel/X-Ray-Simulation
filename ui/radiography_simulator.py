@@ -53,7 +53,7 @@ class RadiographySimulator(QMainWindow):
         self.tabs.addTab(self.create_dose_noise_tab(), "Dose-Noise Analysis")
         
         # Tab 3: Geometric Effects
-        # self.tabs.addTab(self.create_geometric_tab(), "Geometric Effects")
+        self.tabs.addTab(self.create_geometric_tab(), "Geometric Effects")
         
         # Tab 4: Dual-Energy
         self.tabs.addTab(self.create_dualenergy_tab(), "Dual-Energy")
@@ -194,6 +194,99 @@ class RadiographySimulator(QMainWindow):
         dashboard_layout.addWidget(metrics_group, stretch=1)
         
         layout.addLayout(dashboard_layout)
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+
+
+    def create_geometric_tab(self) -> QWidget:
+        """Create Geometric Effects tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        # ── SID Control (Constant) ────────────────────────────
+        sid_group = QGroupBox("Source-to-Image Distance (SID) - Fixed")
+        sid_layout = QGridLayout()
+
+        sid_label = QLabel("SID (cm):")
+        self.sid_spinbox = QDoubleSpinBox()
+        self.sid_spinbox.setRange(50.0, 300.0)
+        self.sid_spinbox.setValue(100.0)
+        self.sid_spinbox.setSingleStep(5.0)
+        self.sid_spinbox.setSuffix(" cm")
+        self.sid_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
+        sid_layout.addWidget(sid_label, 0, 0)
+        sid_layout.addWidget(self.sid_spinbox, 0, 1)
+
+        sid_group.setLayout(sid_layout)
+        layout.addWidget(sid_group)
+
+        # ── ODD Control (Variable) ────────────────────────────
+        odd_group = QGroupBox("Object-to-Detector Distance (ODD) - Variable")
+        odd_layout = QGridLayout()
+
+        odd_label = QLabel("ODD (cm):")
+        self.odd_slider = QSlider(Qt.Horizontal)
+        self.odd_slider.setRange(0, int(self.sid_spinbox.value()))  # 0 to SID value
+        self.odd_slider.setValue(0)
+        self.odd_value_label = QLabel("0 cm")
+        self.odd_slider.valueChanged.connect(lambda: self._update_geo_labels())
+        odd_layout.addWidget(odd_label, 0, 0)
+        odd_layout.addWidget(self.odd_slider, 0, 1)
+        odd_layout.addWidget(self.odd_value_label, 0, 2)
+
+        odd_group.setLayout(odd_layout)
+        layout.addWidget(odd_group)
+
+        # ── Focal Spot Size Control ───────────────────────────
+        focal_group = QGroupBox("Focal Spot Size")
+        focal_layout = QGridLayout()
+
+        focal_label = QLabel("Focal Spot Size (cm):")
+        self.focal_spinbox = QDoubleSpinBox()
+        self.focal_spinbox.setRange(0.01, 0.30)
+        self.focal_spinbox.setValue(0.06)       # 0.6 mm typical
+        self.focal_spinbox.setSingleStep(0.01)
+        self.focal_spinbox.setSuffix(" cm")
+        self.focal_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
+        focal_layout.addWidget(focal_label, 0, 0)
+        focal_layout.addWidget(self.focal_spinbox, 0, 1)
+
+        focal_group.setLayout(focal_layout)
+        layout.addWidget(focal_group)
+
+        # ── Live Preview Labels ───────────────────────────────
+        preview_group = QGroupBox("Calculated Values (Live Preview)")
+        preview_layout = QGridLayout()
+
+        self.sod_result_label    = QLabel("SOD = SID - ODD = 100.0 cm")
+        self.mag_result_label    = QLabel("Magnification: 1.000x")
+        self.penumbra_result_label = QLabel("Penumbra: 0.0000 cm (0.00 px)")
+
+        preview_layout.addWidget(self.sod_result_label,     0, 0)
+        preview_layout.addWidget(self.mag_result_label,     1, 0)
+        preview_layout.addWidget(self.penumbra_result_label,2, 0)
+
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+
+        # ── Apply Button ──────────────────────────────────────
+        # ── Penumbra Toggle ───────────────────────────────────
+        self.penumbra_checkbox = QCheckBox("Apply Penumbra Effect (Focal Spot Blurring)")
+        self.penumbra_checkbox.setChecked(True)   # ON by default
+        layout.addWidget(self.penumbra_checkbox)
+
+        # ── Magnification Toggle ──────────────────────────────
+        self.magnification_checkbox = QCheckBox("Apply Magnification Effect")
+        self.magnification_checkbox.setChecked(True)   # ON by default
+        layout.addWidget(self.magnification_checkbox)
+
+        # ── Apply Button ──────────────────────────────────────
+        apply_btn = QPushButton("Apply Geometric Effects")
+        apply_btn.clicked.connect(self.apply_geometric_effects)
+        layout.addWidget(apply_btn)
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
