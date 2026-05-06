@@ -448,9 +448,25 @@ class RadiographySimulator(QMainWindow):
 
     @staticmethod
     def _to_bone_white_display(radiograph: np.ndarray) -> np.ndarray:
-        """Map transmission image to display where bone is white and air is dark."""
-        radiograph_norm = (radiograph - radiograph.min()) / (radiograph.max() - radiograph.min() + 1e-6)
-        return 1.0 - radiograph_norm
+        """Map transmission image to log-space (Optical Density) for display."""
+        # 1. Estimate unattenuated beam (Air). 
+        # We use the 99th percentile to ignore extreme positive noise spikes.
+        I_max = np.percentile(radiograph, 99) + 1e-6
+        
+        # 2. Calculate transmission and convert to Optical Density (log space)
+        # OD is directly proportional to tissue thickness and density (mu * x)
+        transmission = np.clip(radiograph / I_max, 1e-6, 1.0)
+        od = -np.log(transmission)
+        
+        # 3. Normalize OD for 0-1 display
+        # Use percentiles to set the visual window, ignoring the 1% most extreme noise
+        od_min = np.percentile(od, 1)
+        od_max = np.percentile(od, 99)
+        
+        od_norm = (od - od_min) / (od_max - od_min + 1e-6)
+        
+        # 4. Clip strictly to 0-1 to handle any outliers beyond the percentiles
+        return np.clip(od_norm, 0.0, 1.0)
     
     def simulate_basic(self):
         """Simulate basic acquisition"""
