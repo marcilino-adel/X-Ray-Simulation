@@ -536,13 +536,19 @@ class RadiographySimulator(QMainWindow):
                 noise_mask = masks['air'] if np.count_nonzero(masks['air']) > 0 else np.ones_like(ideal, dtype=bool)
                 
             # 4. Calculate SNR and CNR
+            # Isolate pure quantum mottle by subtracting the perfect anatomy
+            pure_noise = noisy - ideal 
+
+            # Calculate the standard deviation of ONLY the noise
+            std_sig = float(np.std(pure_noise[signal_mask]))
+            std_noise = float(np.std(pure_noise[noise_mask]))
             signal_vals = noisy[signal_mask]
             noise_vals = noisy[noise_mask]
             
             mean_sig = float(np.mean(signal_vals))
-            std_sig = float(np.std(signal_vals))
-            mean_noise = float(np.mean(noise_vals))
-            std_noise = float(np.std(noise_vals))
+            # std_sig = float(np.std(signal_vals))
+            mean_noise = float(np.mean(pure_noise))
+            # std_noise = float(np.std(noise_vals))
             
             snr = mean_sig / (std_sig + 1e-6)
             cnr = abs(mean_sig - mean_noise) / (std_noise + 1e-6)
@@ -568,7 +574,8 @@ class RadiographySimulator(QMainWindow):
             
             # Plot 1: Visual Image Quality
             ax1 = self.figure.add_subplot(121)
-            im = ax1.imshow(noisy, cmap='gray', vmin=0, vmax=dose)
+            display_img = self._to_bone_white_display(noisy)
+            im = ax1.imshow(display_img, cmap='gray', vmin=0, vmax=1)
             ax1.set_title(f"Simulated Clinical Radiograph\n(Dose I₀ = {dose})")
             ax1.axis('off')
             
