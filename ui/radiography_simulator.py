@@ -245,9 +245,9 @@ class RadiographySimulator(QMainWindow):
 
         focal_label = QLabel("Focal Spot Size (cm):")
         self.focal_spinbox = QDoubleSpinBox()
-        self.focal_spinbox.setRange(0.01, 0.30)
+        self.focal_spinbox.setRange(0.01, 0.50)
         self.focal_spinbox.setValue(0.06)       # 0.6 mm typical
-        self.focal_spinbox.setSingleStep(0.01)
+        self.focal_spinbox.setSingleStep(0.05)
         self.focal_spinbox.setSuffix(" cm")
         self.focal_spinbox.valueChanged.connect(lambda: self._update_geo_labels())
         focal_layout.addWidget(focal_label, 0, 0)
